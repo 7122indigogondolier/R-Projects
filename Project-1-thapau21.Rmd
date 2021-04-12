@@ -1,0 +1,251 @@
+---
+title: "Project 1 - Data Preparation, Exploration & Partitioning"
+author: "Utkrist P. Thapa '21" 
+date: "`r Sys.Date()`" 
+output: html_document
+---
+
+### Load Packages 
+```{r load_packages, message = FALSE}
+library(tidyverse) 
+library(rsample)
+library(kableExtra)
+library(lubridate)
+library(reshape)
+library(recipes)
+```
+
+### Load Data 
+```{r load_data, message = FALSE}
+bike_data <- read_csv("data/bike_share_day.csv")
+car_data <- read_csv("data/car_sales_summer_2014.csv")
+```
+
+## Part 1 - Bike Rentals in Washington, DC
+### Question 1 
+I piped my dataframe bike_data into heasd(50) to get the first 50 rows. I used scroll_box() from kable() to create a scrollable window in order to accomodate the 50 rows without showing all 50 at the same time. 
+Then, I printed out the dimensions and statistical summary of bike_data. 
+I summarise the calculated the sum of is.na(bike_data) across all variables in bike_data and display the results. Since is.na() returns a boolean type (0 or 1 for FALSE or TRUE), we can sum these up to see how many missing values occur in the dataframe. 
+```{r question_1}
+bike_data %>%
+  head(50) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "50%", height = "600px")
+
+print(dim(bike_data))
+summary(bike_data)
+
+bike_data %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>% 
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "100px", width = "600px")
+```
+There are no missing values in this dataset.
+
+### Question 2
+I have factored season, holiday, workingday and weathersit variables with appropriate levels. I have rearranged the level order of season variable in order to make spring the baseline level.
+I have used glimpse() function to take a quick look at what bike_data looks like. 
+```{r question_2}
+bike_data$season <- factor(bike_data$season)
+levels(bike_data$season)[1:4] <- c("winter", "spring", "summer", "fall")
+
+bike_data$season <- factor(bike_data$season, levels = c("spring", "summer", "fall", "winter"))
+
+bike_data$holiday <- factor(bike_data$holiday)
+levels(bike_data$holiday)[1:2] <- c("no", "yes")
+
+bike_data$workingday <- factor(bike_data$workingday)
+levels(bike_data$workingday)[1:2] <- c("no", "yes")
+
+bike_data$weathersit <- factor(bike_data$weathersit)
+levels(bike_data$weathersit)[1:4] <- c("clear", "mist", "light precipitation", "heavy precipitation")
+
+glimpse(bike_data)
+```
+
+### Question 3
+I have used the information available in the codebook to calculate the values for these new variables. I have added these new columns (variables) to bike_data. 
+```{r question_3}
+bike_data <- bike_data %>%
+  mutate(raw_temp = 41 * temp) %>%
+  mutate(feel_temp = 50 * atemp) %>%
+  mutate(humidity = 100 * hum) %>%
+  mutate(cal_windspeed = 67 * windspeed)
+```
+
+
+### Question 4
+Here, I have calculated the difference between the sum of all values in the variable casual and registered, against the variable cnt. If the difference is zero, that must mean that the values in variables casual and registered must add up to the values in cnt. 
+```{r question_4}
+sum(bike_data$casual + bike_data$registered 
+    - bike_data$cnt) == 0
+```
+
+### Question 5
+First, I converted the date column into a Date object type. I have used the newly created variable raw_temp in order to color the scatterplot as shown in the figure. 
+I have limited the date (xlim) from beginning of 2011 to the end of 2012 according to the figure given to us. 
+```{r question_5}
+bike_data <- bike_data %>%
+  mutate(dteday = mdy(dteday))
+
+bike_data %>%
+  ggplot(mapping = aes(x = dteday, y = cnt, color = bike_data$raw_temp)) + 
+  geom_point(show.legend = TRUE) + 
+  labs(title = "Bike Rentals in DC, 2011 and 2012", 
+       subtitle = "Warmer temperatures associated with more bike rentals", 
+       x = "Date", 
+       y = "Bike Rentals", 
+       color = "Temperature(C)") +
+  xlim(c(ydm("2011-01-01"), ymd("2012-31-12"))) 
+```
+
+### Question 6
+I decided to visualize this data via boxplots. The visualization clearly expresses what the scatterplot previously stated: higher amount of bike rentals are associated with warmer temperatures since the median for the first three boxplots are higher than winter. 
+```{r question_6}
+bike_data %>%
+  ggplot(aes(x = season, y = cnt)) +
+  geom_boxplot() +
+  labs(title = "Bike Rentals per Season", 
+       x = "Seasons", 
+       y = "Bike Rentals")
+```
+
+
+### Question 7
+I have used the rsample package in order to partition the data into training and test sets. Then I have used kable() in order to display the partitions in a nice way. 
+In order to make the partition, I set the seed and then use initial_split() function from rsample package to make splits according to a specified proportion. 
+```{r question_7}
+set.seed(2021) 
+bike_data_split <- bike_data %>%
+  initial_split((prop = 0.75)) 
+bike_train <- training(bike_data_split) 
+bike_test <- testing(bike_data_split) 
+
+# displaying the partitions 
+print(paste("Rows: ", nrow(bike_train)))
+bike_train %>%
+  head(10) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "50%", width = "600px")
+
+print(paste("Rows: ", nrow(bike_test)))
+bike_test %>%
+  head(10) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "50%", width = "600px")
+```
+
+## Part 2: Toyota Corolla Dataset 
+### Question 8 
+I decided to create a reduced subset by using the subset variable names.
+```{r question_8}
+car_subset <- car_data[c("Id", "Model", "Price", "Age_08_04", "KM", 
+                         "Fuel_Type", "HP", "Met_Color", "Automatic", 
+                         "cc", "Doors", "Quarterly_Tax", "Weight")]
+glimpse(car_subset)
+```
+
+### Question 9
+I have displayed the dimensions and the statistical summary of the car_subset dataframe. Then, I summarise the calculated the sum of is.na(car_subset) across all variables in car_subset and display the results. Since is.na() returns a boolean type (0 or 1 for FALSE or TRUE), we can sum these up to see how many missing values occur in the dataframe.   
+```{r question_9}
+print(dim(car_subset))
+summary(car_subset)
+car_subset %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "100px", width = "600px")
+```
+There are no missing values in this dataset. 
+
+### Question 10 
+I summarise the calculated sum of boolean type output from str_detect() across all variables. This helps us see how many extraneous question marks occur in each of the variables. 
+Then, I mutate the Model variable using str_remove() in order to remove the question marks.
+```{r question_10}
+car_subset %>%
+  summarise(across(everything(), ~ sum(str_detect(., pattern = "\\?")))) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "100px", width = "600px")
+
+# removing the extraneous question marks 
+car_subset <- car_subset %>%
+  mutate(Model = str_remove(Model, pattern = "\\?"))
+
+car_subset %>%
+  head(50) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "70%", height = "600px")
+```
+There are no other variables with extraneous question marks aside from model. There are 147 cases of extraneous question marks in the variable model. 
+
+### Question 11
+The price and age are heavily negatively correlated. Similarly, age and weight seem to be negatively correlated as well. 
+Weight is highly correlated with quarterly_tax. Similarly, price and weight are highly correlated as well. 
+```{r question_11}
+cor_matrix <- round(cor(car_subset[c(3, 4, 5, 7, 10, 11, 12, 13)]), 2)
+melt(cor_matrix) %>% 
+  ggplot(aes(x = X1, y = X2, fill = value)) +
+  geom_tile() + 
+  geom_text(aes(x = X1, y = X2, label = value)) +
+  scale_fill_gradient2(low = "red", high = "steelblue", guide = "colorbar") +
+  labs(title = "Heatmap of a Correlation Table for Car Dataset Numeric Variables",
+       x = "", y = "")
+```
+
+### Question 12 
+I factor Met_Color and Automatic in order to avoid problems with step_dummy(). 
+I have used recipes package in order to create the dummy variables for the three categorical variables. I preserve the original variables and simply add the new dummy variables to the dataframe. 
+Following the syntax of the recipes package, I pipe car_subset to recipe(), then create the dummy variables using step_dummy(), prep this step using prep() and finally apply it to the dataframe using bake(). 
+```{r question_12}
+car_subset <- car_subset %>%
+  mutate(Met_Color = factor(Met_Color, levels = c(0, 1))) %>%
+  mutate(Automatic = factor(Automatic, levels = c(0, 1))) 
+  
+car_dummy <- car_subset %>%
+  recipe(~ .) %>%
+  step_dummy(Fuel_Type, Met_Color, Automatic, one_hot = TRUE, preserve = TRUE) %>% 
+  prep(training = car_subset) %>%
+  bake(new_data = car_subset)
+glimpse(car_dummy)
+```
+
+### Question 13
+I have partitioned the car_subset dataframe using the rsample package. I set the random seed, and initially split the car_subset into 50-50. Then I take the second half, and split it into 60-40 splits in order to get the final 50-30-20 train, validation and test splits. 
+```{r question_13}
+set.seed(2021)
+car_split <- car_dummy %>%
+  initial_split(prop = 0.5) 
+car_train <- training(car_split)
+car_rest <- testing(car_split)
+
+# splitting the rest of the car data into testing and validation sets 
+set.seed(2021)
+car_val_split <- car_rest %>%
+  initial_split(prop = 0.6)
+
+car_val <- training(car_val_split)
+car_test <- testing(car_val_split)
+
+glimpse(car_train)
+glimpse(car_val)
+glimpse(car_test)
+```
+The training partition is used for training the model. The validation partition is then used to test the model with unseen data in order to gauge underfitting/overfitting. Validation partitions can also be used to tweak the parameters of a model. The test partition is used to evaluate the performance of the model with new data. 
+
+### Project Log 
+I have only used materials posted to the class website as well as my personal notes and past assignments. 
+
+### The Pledge 
+On my honor, I have neither given nor received any unacknowledged aid on this project. 
+
+Utkrist P. Thapa 
+
+March 8, 2021, Monday
+
+
