@@ -1,5 +1,5 @@
 # R-Projects
-This is a repository of a few R projects I have worked on as part of my Data Mining in Business Analytics course. 
+This is a repository of some R projects I have worked on as part of my Data Mining in Business Analytics course. 
 
 ## Viewing Rendered HTML on Github:
 Please use the following links to view the rendered HTML for the projects:
