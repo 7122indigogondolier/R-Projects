@@ -18,4 +18,5 @@ I have removed the private Google API key that I used in these projects for secu
 
 ## Author: 
 Utkrist P. Thapa 
+
 Washington and Lee University
