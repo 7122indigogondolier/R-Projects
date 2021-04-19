@@ -1,0 +1,1188 @@
+---
+title: "BUS 317 - Final Project"
+author: "Utkrist P. Thapa '21"
+date: "`r Sys.Date()`"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+---
+
+### Load Packages 
+```{r load-packages, message = FALSE}
+library(tidyverse)
+library(knitr)
+library(RMySQL)
+library(kableExtra)
+library(lubridate)
+library(ggmap)
+library(ggplot2)
+library(reshape)
+library(gridExtra)
+library(rsample)
+library(tidymodels)
+library(recipes)
+library(CGPfunctions)
+library(kknn)
+```
+
+### Database connection
+I set up the connection to the OFX database here. 
+```{r db-connection, echo = FALSE}
+
+```
+
+### Load Data 
+I retrieve each table in the dataset using select queries from SQL. Then, I write the imported data into csv files and put them in folder 'data'. I have commented the write_csv lines because it is only necessary to execute these once. Then, I disconnect from the database.
+```{r load-db-data}
+query <- dbSendQuery(db, 'Select * from product')
+product <- fetch(query, n = -1)
+
+query <- dbSendQuery(db, 'Select * from category')
+category <- fetch(query, n = -1)
+
+query <- dbSendQuery(db, 'Select * from buyer')
+buyer <- fetch(query, n = -1)
+
+query <- dbSendQuery(db, 'Select * from orders')
+orders <- fetch(query, n = -1)
+
+query <- dbSendQuery(db, 'Select * from location')
+location <- fetch(query, n = -1)
+
+query <- dbSendQuery(db, 'Select * from order_product')
+order_product <- fetch(query, n = -1)
+
+# Saving the data to csv
+# write_csv(product, "data/product.csv")
+# write_csv(category, "data/category.csv")
+# write_csv(buyer, "data/buyer.csv")
+# write_csv(orders, "data/orders.csv")
+# write_csv(location, "data/location.csv")
+# write_csv(order_product, "data/order_product.csv")
+
+dbClearResult(query)
+dbDisconnect(db)
+```
+
+```{r load-bike-data, message = FALSE}
+bike_data <- read_csv("data/bike_share_hourly.csv")
+```
+
+```{r load-auto-data, message = FALSE}
+auto_data <- read_csv("data/auto_segments.csv")
+```
+
+
+
+### Register Google API
+```{r register-api, echo = FALSE}
+
+```
+
+Here, I obtain the longitudes and latitudes for unique cities as well as unique states and write it to a csv file for future reference purposes. I have commented out the code to ensure it is run only once.
+```{r geocode-location, eval = FALSE}
+# location_lon_lat <- location %>%
+#   distinct(City, State) %>%
+#   mutate(city_state = paste(City, State, sep = ", ")) %>%
+#   mutate_geocode(city_state)
+
+# state_lon_lat <- location %>%
+#   distinct(State) %>%
+#   mutate_geocode(State)
+
+# write_csv(location_lon_lat, "data/location_lon_lat.csv")
+# write_csv(state_lon_lat, "data/state_lon_lat.csv")
+```
+
+I turn the data imported from the database into tibble objects here and join them into a main dataframe.
+```{r turn-tibble, message = FALSE}
+product <- tibble(product) 
+category <- tibble(category)
+buyer <- tibble(buyer)
+orders <- tibble(orders)
+location <- tibble(location)
+order_product <- tibble(order_product)
+
+location_lon_lat <- read_csv("data/location_lon_lat.csv")
+state_lon_lat <- read_csv("data/state_lon_lat.csv")
+
+data <- inner_join(category, product, by = "Sub_Category") %>%
+  inner_join(order_product, by = "Product_ID") %>% 
+  inner_join(orders, by = "Order_ID") %>%
+  inner_join(buyer, by = "Buyer_ID") %>%
+  inner_join(location, by = "Postal_Code") %>%
+  inner_join(location_lon_lat, by = c("City", "State"))
+```
+
+## Part 1 - Office Express
+
+### Cleaning up the dataset
+First, I rename the colunmns by getting rid of upper case letters and check to see if there are any missing values here.
+```{r rename-and-check}
+data <- data %>%
+  rename_with(tolower)
+
+data %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+```
+
+There are eight missing last names in this dataset. I have not changed or removed any rows since I do not intend to use the last_name variable to draw business intelligence from this dataset. 
+
+Then, I factor categorical variables with more than two categories. I have also turned the date variables into Date objects.
+```{r factor-categories}
+data <- data %>%
+  mutate(sub_category = factor(sub_category), 
+         category = factor(category), 
+         product_id = factor(product_id), 
+         order_id = factor(order_id),
+         order_date = ymd(order_date), 
+         ship_date = ymd(ship_date), 
+         ship_mode = factor(ship_mode), 
+         buyer_id = factor(buyer_id), 
+         type = factor(type), 
+         region = factor(region), 
+         city_state = factor(city_state))
+```
+
+Lets take a glimpse of the joined dataset:
+
+```{r glimpse-data}
+glimpse(data)
+```
+There are 20 variables (other than the three I added--city_state, lon and lat) in this dataset with 9,986 observations in total.
+
+Then, I subset the dataset here in order to get rid of repetitive and/or highly correlated variables:
+```{r subset-data}
+data_subset <- data[c(1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 20, 21, 22, 23)]
+glimpse(data_subset)
+```
+
+### Correlation Between Numerical Variables 
+1. What numerical variables are highly correlated to profit? What, if any, numerical variables are highly correlated to each other?
+
+In order to answer this question, I have constructed a heatmap here with numerical variables.
+```{r make-heatmap}
+cor_df <- data_subset %>%
+  mutate(profit = quantity * gross_profit_per_unit)
+
+cor_matrix <- round(cor(cor_df[c(5, 6, 7, 8, 18)]), 2)
+melt(cor_matrix) %>% 
+  ggplot(aes(x = X1, y = X2, fill = value)) +
+  geom_tile() + 
+  geom_text(aes(x = X1, y = X2, label = value)) +
+  scale_fill_gradient2(low = "red", high = "steelblue", guide = "colorbar") +
+  labs(title = "Heatmap of a Correlation Table for OFX Data Numeric Variables",
+       x = "", y = "")
+```
+
+Most of what we can see here is obvious. Profit is highly correlated with Gross Profit per Unit and the Unit price while being negatively correlated with discount. Perhaps something that is somewhat counter intuitive is that profit is not correlated with quantity sold.
+
+Other variables that have substantial correlation with one another are gross_profit_per_unit and unit_price. However, I do not think that this correlation is high enough for these variables to act as proxies for one another. It would not be wise to remove either one of these two variables if we were to analyze this dataset with data mining algorithms.
+
+This map does not provide us with substantial business intelligence. So I believe it is time to plot profit with categories and sub_categories of units sold.
+
+### Relation between Categories and Sub Categories of Product with Profit
+2. What are the profits generated from each category and sub-category? Which ones are the best performing and which ones are least performing in terms of profits across the entire dataset?
+
+I have plotted a bar graph showing profit with category of product. I have reused cor_df from the previous section because the dataframe contains a column for profit.
+```{r cat-bar-plot}
+cor_df %>%
+  select(category, profit) %>%
+  group_by(category) %>%
+  summarise(category_profit = sum(profit)) %>%
+  ggplot(aes(x = category, y = category_profit)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Category", y = "Profit per Category", 
+       title = "Bar Plot of Profit vs Category")
+```
+
+It seems like technology generates the highest profit, and furniture the lowest. Office supplies comes in with a close second. Lets take a look at sub categories:
+
+```{r sub-cat-bar-plot}
+cor_df %>%
+  select(sub_category, profit) %>%
+  group_by(sub_category) %>%
+  summarise(sub_category_profit = sum(profit)) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(sub_category, sub_category_profit), 
+               y = sub_category_profit), stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Sub-Category", y = "Profit per Sub-Category", 
+       title = "Bar Plot of Profit vs Sub-Category")
+```
+
+It looks like the sale of tables, bookcases and supplies are generating a loss overall. Tables and bookcases fall under furniture and furniture is the lowest performing category in terms of profits.
+
+On the other end, copiers, phones and accessories are the sub-categories with the highest profits generated. 
+
+### Quarterly Profits Per Category
+3. Are there quarterly effects on profits generated by OFX? Which is the best performing quarter for OFX? 
+In order to find out, I have plotted a line graph for each broad category by quarter.
+
+```{r quarterly-line-graph, message = FALSE}
+cor_df %>%
+  mutate(quarter = quarter(order_date)) %>%
+  select(category, quarter, profit) %>%
+  group_by(quarter, category) %>%
+  summarise(quarterly_profit = sum(profit)) %>%
+  ggplot(aes(x = quarter, y = quarterly_profit, 
+                color = category)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Quarter", y = "Quarterly Profit", 
+       title = "Quarterly Profit Line Graph per Category", 
+       color = "Category")
+```
+
+It looks like the fourth quarter is the most profitable for OFX across all three categories of products, and the first quarter seems to be the worst performing quarter across all three categories.
+
+### Quarterly Counts of Buyer Types 
+4. What kinds of buyers are most active in terms of purchase orders in each quarter? Which buyer type is the most active in terms of purchase orders?
+
+I have plotted a line graph for each buyer type count over quarters here:
+```{r quarterly-buyer-line-graph, message = FALSE}
+cor_df %>%
+  mutate(quarter = quarter(order_date)) %>%
+  select(type, quarter) %>%
+  group_by(type, quarter) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = quarter, y = count, 
+                color = type)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Quarter", y = "Buyer Count", 
+       title = "Quarterly Buyer Count by Type", 
+       color = "Buyer Type")
+```
+
+Here I have plotted the buyer count in the overall dataset:
+```{r buyer-count-overall}
+cor_df %>%
+  select(type) %>%
+  group_by(type) %>%
+  summarise(count = n()) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(type, count), 
+               y = count), stat = "identity") +
+  labs(x = "Buyer Type", y = "Count", 
+       title = "Bar Plot of Buyer Type Purchase Order Count")
+```
+
+We see in the bar plot that consumers make for the most purchase orders with OFX in this dataset, followed by corporate and then home office. This is also confirmed in the line graph above the bar plot, where quarter 4 seems to get most buyers for all three buyer types. This is also seen in the line graph for quarterly profits as profits across all three product categories remain highest in quarter 4.
+
+However, most number of purchases does not always equal most profitable buyer type since this depends on what kinds of products they buy. 
+
+### Most Profitable Buyers by Type 
+5. What buyer type is the most profitable for OFX?
+
+In order to find this answer, I have plotted a bar plot showing profit by buyer type:
+```{r profit-by-type, message = FALSE}
+cor_df %>%
+  select(type, profit) %>%
+  group_by(type) %>%
+  summarise(profit_by_type = sum(profit)) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(type, profit_by_type), 
+               y = format(profit_by_type, scientific = FALSE)), 
+               stat = "identity")+
+  labs(x = "Buyer Type", y = "Profit", 
+       title = "Bar Plot of Buyer Type Profits")
+```
+
+Turns out, consumer type buyers are the most frequent buyers as well as the most profitable buyer types for OFX. This bar plot is identical to the previous bar plot showing buyer type count.
+
+### Profit Performance by State 
+6. What states are performing well in terms of profit and which ones are underperforming?
+
+I have plotted the profits by state in a google terrain map in order to gauge the performance of OFXs locations:
+```{r profit-location, message = FALSE}
+state_df <- data %>%
+  mutate(profit = quantity * gross_profit_per_unit) %>%
+  select(state, profit) %>%
+  group_by(state) %>%
+  summarise(state_profit = sum(profit))
+
+state_lon_lat <- state_lon_lat %>%
+  rename_with(tolower)
+
+state_df <- inner_join(state_df, state_lon_lat)
+
+us <- get_map(location = "united states", maptype = "terrain", source = "google", zoom = 4)
+
+ggmap(us) +
+  geom_point(data = state_df, 
+             aes(x = lon, y = lat, size = state_profit, alpha = 0.10), 
+             color = "blue") +
+  labs(title = "Profits by State",
+       size = "Profit", 
+       x = "", y = "", alpha = "") +
+  scale_size(range = c(1, 7))
+```
+
+Here is a bar plot showing profits by region:
+
+```{r region-bar-plot}
+data %>%
+  mutate(profit = quantity * gross_profit_per_unit) %>%
+  select(region, profit) %>%
+  group_by(region) %>%
+  summarise(region_profit = sum(profit)) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(region, region_profit), y = region_profit), stat = "identity") +
+  labs(title = "Bar Plot of Profits by Region", 
+       x = "Region", 
+       y = "Profit")
+```
+
+It looks like California, New York and Washington are some states that are doing really well in terms of profitability for OFX. The western region is the most profitable followed by the east. The central region ranks last in profitability. OFX is not doing great in Texas.
+
+### Profitable Sub-Category by Location 
+7. Which sub-categories of products are most profitable in each state?
+
+I have plotted a google toner-lite map showing most prevalent categories by state here.
+```{r sub-cat-location, message = FALSE}
+sub_cat_by_state <- data %>%
+  mutate(profit = quantity * gross_profit_per_unit) %>%
+  select(state, sub_category, profit) %>%
+  group_by(state, sub_category) %>%
+  summarise(total_profit = sum(profit)) %>%
+  group_by(state) %>%
+  filter(total_profit == max(total_profit))
+
+sub_cat_by_state <- inner_join(sub_cat_by_state, state_lon_lat)
+
+us <- get_map(location = "united states", maptype = "toner-lite", source = "google", zoom = 4)
+
+ggmap(us) +
+  geom_point(data = sub_cat_by_state, 
+             aes(x = lon, y = lat, 
+                 size = total_profit, 
+                 color = sub_category, 
+                 alpha = 0.10)) +
+  labs(title = "Most Profitable Product Sub-Category by State",
+       size = "Sub Category Profit", 
+       color = "Sub Category",
+       x = "", y = "", alpha = "") +
+  scale_size(range = c(1, 7)) 
+```
+
+### Buyer Type by Region
+8. What buyer type drives the profitability for OFX in each region?
+
+In order to see what buyer type drives profitability in each region, I have plotted a line graph here:
+```{r region-line-graph, message = FALSE}
+data %>%
+  mutate(profit = quantity * gross_profit_per_unit) %>%
+  select(type, region, profit) %>%
+  group_by(region, type) %>%
+  summarise(region_profit = sum(profit)) %>%
+  ggplot(aes(x = region, y = region_profit, color = type, group = type)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Region", y = "Profit", color = "Buyer Type", 
+       title = "Buyer Type by Region")
+```
+
+This line graph shows consumer buyer types driving the most profitability in the East, South and West. The biggest buyer type in Central region is corporate, followed by home office and lastly consumer. Home office is the least profitable buyer type in South and West regions. Corporate is the least profitable in the East region.
+
+
+### Buyer Type by Product Category 
+9. What buyer type buys most of what product category?
+
+I have plotted a line graph with a summarised order count per type to visualize this data:
+```{r type-category-line-graph, message = FALSE}
+cor_df %>%
+  select(type, category) %>%
+  group_by(type, category) %>%
+  summarise(total = n()) %>%
+  ggplot(aes(x = category, y = total, 
+             color = type, group = type)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Category", y = "Total Orders", 
+       color = "Buyer Type")
+```
+
+It seems like the order quantity for Office Supplies is the greatest among all buyer types. This is followed by Furniture and Technology across all three buyer types. Despite this, Technology generates the most profit and Furniture the least. This has to do with gross profit per unit of product sold.
+
+```{r cat-gross-profit}
+cor_df %>%
+  select(category, gross_profit_per_unit) %>%
+  group_by(category) %>%
+  summarise(total_gross_profit = sum(gross_profit_per_unit)) %>%
+  ggplot() +
+  geom_bar(aes(x = category, 
+               y = total_gross_profit), 
+           stat = "identity") +
+  labs(x = "Category", y = "Total Gross Profit per Unit", 
+       title = "Total Gross Profit per Unit by Product Category")
+  
+```
+
+As expected, the profit margins for Technology and Office Supplies is much higher than Furniture. Hence, despite the order quantity for Technology being the least, it generates the most profit for OFX as seen before.
+
+This brings us to question how much of discounts are offered in each category.
+
+### Discounts per Category
+10. What is the product category that sees the most discount? What do discounts look like for product sub-categories?
+
+I have plotted box-plots for discount by product category and sub-category here:
+```{r cat-discount}
+cor_df %>%
+  ggplot() +
+  geom_boxplot(aes(x = category, y = discount)) +
+  labs(x = "Product Category", y = "Discount") +
+  coord_flip()
+```
+```{r sub-cat-discount}
+cor_df %>%
+  ggplot() +
+  geom_boxplot(aes(x = sub_category, y = discount)) +
+  labs(x = "Product Sub-Category", y = "Discount") +
+  coord_flip()
+```
+
+On average, Furniture is the most discounted Product Category. As we have seen in the correlation heatmap before, and intuitively speaking, discount is a variable negatively correlated with profit. Hence, it is not surprising that Furniture would be generating the least profitability given that it has the lowest total gross profit per unit as well as its high discount on average.
+
+Technology is also discounted about the same on average but its gross profit per unit makes up for this in terms of profitability.
+
+Within sub-categories, Tables are highly discounted on average followed by Chairs, Bookcases, Binders, Machines and Phones.
+
+### Order Quantity by Product
+11. What is the quantity of products ordered from each category? Is there a significant difference between quantity per order amongst the product categories?
+
+Here is a boxplot followed by a table showing total quantity ordered and average quantity per order:
+```{r category-box-plot}
+cor_df %>%
+  ggplot() +
+  geom_boxplot(aes(x = category, y = quantity)) +
+  labs(title = "Quantity per Order by Product Category", 
+       x = "Category", 
+       y = "Quantity")
+```
+```{r cat-quantity-mean}
+cor_df %>%
+  select(category, quantity) %>%
+  group_by(category) %>%
+  summarise(total_quantity = sum(quantity), 
+            mean_quantity = mean(quantity)) %>%
+  kable() 
+```
+
+According to the box plot and the table shown here, the quantity ordered per order looks to be very similar across all categories. The box plot and the table both show that the mean quantity per order for all categories are about 3.7-3.8. 
+
+Here is a box plot for the sub-categories:
+
+```{r sub-cat-quantity-box-plot}
+cor_df %>%
+  ggplot() +
+  geom_boxplot(aes(x = sub_category, y = quantity)) +
+  labs(title = "Quantity per Order by Product Sub-Category", 
+       x = "Sub-Category", 
+       y = "Quantity") +
+  coord_flip()
+```
+
+Most sub-categories have approximately the same quantity figures (except fasteners), and there are a few outliers.
+
+
+### Shipping Mode and Profits
+12. What are total profits for products shipped in each shipping mode? 
+
+Here, I have drawn a bar plot to visualize this data:
+```{r shipping-mode-bar-plot}
+cor_df %>%
+  select(ship_mode, profit) %>%
+  group_by(ship_mode) %>%
+  summarise(total_profit = sum(profit)) %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(ship_mode, total_profit), 
+               y = total_profit), 
+         stat = "identity") +
+  labs(x = "Shipping Mode", y = "Profits", 
+       title = "Profits by Shipping Mode")
+```
+
+Products shipped in Standard Class mode contribute most to profits, followed by Second Class, First Class and Same Day. 
+
+
+## Part 2 - k-NN Regression Analysis - Bike Shares Redux
+### Exploratory Data Analysis
+I do not think the column names need to be renamed since they are all lower case with no spaces. I check to see if there are any missing data values.
+```{r eda}
+# checking missing values
+bike_data %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>% 
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+
+# converting date column into ymd objects 
+bike_data <- bike_data %>% 
+  mutate(dteday = ymd(dteday))
+
+# factoring non-binary discrete variables 
+bike_data <- bike_data %>%
+  mutate(season = factor(season), 
+         mnth = factor(mnth), 
+         weekday = factor(weekday), 
+         weathersit = factor(weathersit), 
+         time_of_day = cut(hr, breaks = c(0, 6, 12, 18, 23), 
+                           include.lowest = TRUE, 
+                           labels = c("night", "morning", 
+                                      "afternoon", "evening")))
+
+```
+
+### Question 1
+I have used geom_density to pull up the density distributions.
+```{r q1}
+p1 <- bike_data %>%
+  ggplot() +
+  geom_density(aes(x = temp)) +
+  labs(x = "Normalized Temperature (Celsius)", 
+       y = "Density", 
+       title = "Temperature Density")
+
+p2 <- bike_data %>%
+  ggplot() +
+  geom_density(aes(x = atemp)) +
+  labs(x = "Normalized Feeling Temperature (Celsius)", 
+       y = "Density", 
+       title = "Feeling Temperature Density")
+
+p3 <- bike_data %>%
+  ggplot() +
+  geom_density(aes(x = hum)) +
+  labs(x = "Normalized Humidity", 
+       y = "Density", 
+       title = "Humidity Density")
+
+p4 <- bike_data %>%
+  ggplot() +
+  geom_density(aes(x = windspeed)) +
+  labs(x = "Normalized Windspeed (Celsius)", 
+       y = "Density", 
+       title = "Windspeed Density")
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+These plots show us that while these values have been normalized between 0 and 1, there are multiple peaks, especially in temperature and feeling temperature variables. Since kNNs do not assume a standard distribution, perhaps it is not necessary to standardize this distribution into a Gaussian curve.
+
+These variables are suitable for use in kNN algorithm as long as they are scaled the same (between 0 and 1).
+
+### Question 2
+```{r q2}
+l1 <- bike_data %>%
+  ggplot(aes(x = dteday, y = casual)) +
+  geom_line() +
+  labs(x = "Day", 
+       y = "Casual Users", 
+       title = "Line Graph of Casual Daily Users")
+
+l2 <- bike_data %>%
+  ggplot(aes(x = dteday, y = registered)) +
+  geom_line() +
+  labs(x = "Day", 
+       y = "Reg. Users", 
+       title = "Line Graph of Registered Daily Users")
+
+l3 <- bike_data %>%
+  ggplot(aes(x = dteday, y = cnt)) +
+  geom_line() +
+  labs(x = "Day", 
+       y = "Total Users", 
+       title = "Line Graph of Total Daily Users")
+
+grid.arrange(l1, l2, l3, nrow = 3)
+```
+
+The beginning and end of each year sees low number of daily users. All three graphs have about the same shape. The yearly graph of 2011 and 2012 also have similar shapes to one another. This tells us trends in one year is similar to the next. However, it does look like 2012 saw more daily users.
+
+Despite dteday variable not being used, I dont think the yr variable should be dropped since we can clearly see that more daily users were seen in yr = 1 (2012) than yr = 0 (2011). 
+
+I think it would be wise to use both years data to predict total ridership, even if management believes number of registered users will be constant at 2012 since we see that casual users have increased in 2012. This means we cannot determine that there will not be an increase/decrease in 2012 for total ridership since casual users can make a difference in this prediction.
+
+### The Model
+#### Partition Data 
+I have partitioned the data here into 75% training and 25% testing sets.
+```{r partition-data}
+set.seed(2021)
+bike_data_split <- initial_split(bike_data, prop = 0.75)  
+bike_data_train <- training(bike_data_split)
+bike_data_test <- testing(bike_data_split)
+```
+
+#### Preprocess Data
+Then, I prepare the data using the recipes package. I have dropped instant, dteday, yr, hr, registered and casual variables as instructed.
+```{r preprocess-data}
+bike_train_recipe <- recipe(cnt ~ ., data = bike_data_train) %>%
+  step_rm(instant, dteday, yr, hr, registered, casual) %>%
+  step_dummy(season, mnth, weekday, weathersit, time_of_day, one_hot = TRUE) %>%
+  prep()
+
+bike_train_juiced <- juice(bike_train_recipe)
+bike_test_baked <- bake(bike_train_recipe, new_data = bike_data_test)
+```
+
+#### Specify model
+I have used tidymodels to specify this kNN model.
+```{r specify-model}
+knn_spec <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+```
+
+#### Fit model
+```{r fit-model}
+knn_model <- knn_spec %>%
+  fit(cnt ~ ., data = bike_train_juiced)
+```
+
+#### Model Evaluation
+```{r evaluate-model}
+knn_model %>%
+  predict(bike_test_baked) %>%
+  bind_cols(bike_test_baked) %>%
+  metrics(truth = cnt, estimate = .pred)
+```
+
+#### Testing multiple values of k
+I have tested values of k ranging from 1 to 150 since the square root of the number of rows in bike_data is about 131. However, I believe the optimal value is much lower and hence, I have reduced this number from 150 to 20.
+```{r test-k}
+possible_optimal_k  <- sqrt(nrow(bike_data))
+
+begin <- 1
+
+for (i in seq(begin, 20, 1)) {
+  
+# Make a knn spec
+knn_spec <- nearest_neighbor(neighbor = i) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+
+# Use the knn spec to fit the prepared training data
+knn_fit <- knn_spec %>% 
+  fit(cnt ~., data = bike_train_juiced)
+
+# Evaluate the model with the training data
+train_knn_fit <-  knn_fit %>% 
+    predict(bike_train_juiced) %>% 
+    bind_cols(bike_train_juiced) %>% 
+    metrics(truth = cnt, estimate = .pred) %>% 
+    mutate(k = i)
+
+# Evaluate the model with the testing data
+test_knn_fit <- knn_fit %>% 
+    predict(bike_test_baked) %>% 
+    bind_cols(bike_test_baked) %>% 
+    metrics(truth = cnt, estimate = .pred) %>% 
+    mutate(k = i)
+
+# Create summary performance evaluation dataframes
+if (i == begin) {
+  summary_train_knn_fit <- train_knn_fit
+  summary_test_knn_fit <-  test_knn_fit
+} else {
+  summary_train_knn_fit <- bind_rows(summary_train_knn_fit, train_knn_fit)
+  summary_test_knn_fit <- bind_rows(summary_test_knn_fit, test_knn_fit)
+  }
+}
+
+summary_train_knn_fit %>% 
+  filter(.metric == "rmse") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Bike Share Training Data RMSE by k values",
+       x = "k Values",
+       y = "RMSE")
+
+summary_test_knn_fit %>% 
+  filter(.metric == "rmse") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Bike Share Testing Data RMSE by k values",
+       x = "k Values",
+       y = "RMSE")
+```
+
+From the testing RMSE values, we see that the error is reduced to minimum at k = 12. Hence, k = 12 is the optimal value here.
+
+#### Rerunning the model with 2012 data 
+```{r rerun-model}
+filtered_bike_data <- bike_data %>%
+  filter(yr == 1)
+
+set.seed(2021)
+bike_data_split2 <- initial_split(filtered_bike_data, prop = 0.75)  
+bike_data_train2 <- training(bike_data_split2)
+bike_data_test2 <- testing(bike_data_split2)
+
+bike_train_recipe2 <- recipe(cnt ~ ., data = bike_data_train2) %>%
+  step_rm(instant, dteday, yr, hr, registered, casual) %>%
+  step_dummy(season, mnth, weekday, weathersit, time_of_day, one_hot = TRUE) %>%
+  prep()
+
+bike_train_juiced2 <- juice(bike_train_recipe2)
+bike_test_baked2 <- bake(bike_train_recipe2, new_data = bike_data_test2)
+
+begin <- 1
+
+for (i in seq(begin, 20, 1)) {
+  
+# Make a knn spec
+knn_spec2 <- nearest_neighbor(neighbor = i) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+
+# Use the knn spec to fit the prepared training data
+knn_fit2 <- knn_spec2 %>% 
+  fit(cnt ~., data = bike_train_juiced2)
+
+# Evaluate the model with the training data
+train_knn_fit2 <-  knn_fit2 %>% 
+    predict(bike_train_juiced2) %>% 
+    bind_cols(bike_train_juiced2) %>% 
+    metrics(truth = cnt, estimate = .pred) %>% 
+    mutate(k = i)
+
+# Evaluate the model with the testing data
+test_knn_fit2 <- knn_fit2 %>% 
+    predict(bike_test_baked2) %>% 
+    bind_cols(bike_test_baked2) %>% 
+    metrics(truth = cnt, estimate = .pred) %>% 
+    mutate(k = i)
+
+# Create summary performance evaluation dataframes
+if (i == begin) {
+  summary_train_knn_fit2 <- train_knn_fit2
+  summary_test_knn_fit2 <-  test_knn_fit2
+} else {
+  summary_train_knn_fit2 <- bind_rows(summary_train_knn_fit2, train_knn_fit2)
+  summary_test_knn_fit2 <- bind_rows(summary_test_knn_fit2, test_knn_fit2)
+  }
+}
+
+summary_train_knn_fit2 %>% 
+  filter(.metric == "rmse") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Bike Share 2012 Training Data RMSE by k values",
+       x = "k Values",
+       y = "RMSE")
+
+summary_test_knn_fit2 %>% 
+  filter(.metric == "rmse") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Bike Share 2012 Testing Data RMSE by k values",
+       x = "k Values",
+       y = "RMSE")
+```
+
+Looking at the testing data RMSE value graph here, it looks like the optimal k value is k = 12 once again. The previous model was more accurate since the minimum RMSE value there was 120 while the minimum RMSE value here is 135.
+
+#### Classifying new time of day weather data
+I have combined the training and testing data and plotted a regression fit here.
+```{r combined-data}
+# Apply the same recipe to the final combined dataset
+bike_data_baked <- bake(bike_train_recipe, new_data = bike_data)
+
+# knn spec for optimal value of k
+knn_spec <- nearest_neighbor(neighbor = 12) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+
+# Use the optimal knn spec to fit the prepared combined dataframe
+final_knn_fit <- knn_spec %>% 
+  fit(cnt ~., data = bike_data_baked)
+
+# Regression fit to a line
+final_knn_fit %>% 
+  predict(bike_data_baked) %>% 
+  bind_cols(bike_data_baked) %>% 
+  select(cnt, .pred) %>% 
+  ggplot(aes(x = cnt, y = .pred)) +
+  # Create a diagonal line:
+  geom_abline(lty = 2) +
+  geom_point(alpha = 0.5) +
+  labs(title = "k-nn Regression fit to a line",
+       y = "Predicted Bike Ridership", 
+       x = "Actual Bike Ridership") +
+  # Scale and size the x- and y-axis uniformly:
+  coord_obs_pred()
+```
+
+The regression line is a straight line through the cluster of points and fits the trend as best a regression line could in the data. There are a few outliers to the right that the line does not model well, but this is due to the concentration of datapoints on the left that forces the regression line to be at a higher angle against the x-axis.
+
+```{r predict-new-data}
+season <- c(1, 2, 2, 2, 3, 4)
+mnth <- c(2, 3, 5, 6, 9, 10)
+hr <- c(6, 17, 8, 16, 20, 9)
+holiday <- c(0, 0, 1, 0, 0, 0)
+weekday <- c(6, 3, 1, 1, 6, 5)
+workingday <- c(0, 1, 0, 1, 0, 1)
+weathersit <- c(1, 2, 2, 1, 3, 2)
+
+raw_temp <- c(5, 13, 24, 22, 26, 16) 
+temp <- (raw_temp + 8) / (39 + 8)
+
+raw_feeling_temp <- c(3, 13, 24, 24, 30, 17)
+atemp <- (raw_feeling_temp + 16) / 66
+
+raw_hum <- c(60, 76, 87, 45, 67, 85)
+hum <- raw_hum / 100
+
+raw_windspeed <- c(0, 15, 7, 31, 17, 9)
+windspeed <- raw_windspeed / 67
+
+new_data <- tibble(
+  season = factor(season), 
+  mnth = factor(mnth), 
+  time_of_day = cut(hr, breaks = c(0, 6, 12, 18, 23), 
+                           include.lowest = TRUE, 
+                           labels = c("night", "morning", 
+                                      "afternoon", "evening")), 
+  holiday = holiday, 
+  weekday = factor(weekday), 
+  workingday = workingday, 
+  weathersit = factor(weathersit), 
+  temp = temp, 
+  atemp = atemp, 
+  hum = hum, 
+  windspeed = windspeed
+)
+
+new_data_baked <- bake(bike_train_recipe, new_data = new_data)
+predict(final_knn_fit, new_data = new_data_baked) %>% kable()
+```
+
+## Part 3 - k-NN Classification Analysis - Customer Automobile Preferences
+I rename the columns in the auto dataset here.
+```{r cleaning-up-auto}
+auto_data <- auto_data %>%
+  rename_with(tolower)
+
+auto_data %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+```
+
+There are missing values here. As instructed I drop the categorical variables with missing values rows:
+```{r drop-na}
+auto_data2 <- auto_data %>%
+  drop_na(ever_married, graduated, profession, var_1)
+
+auto_data2 %>% 
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+```
+
+There are no more missing values in this dataset, except for the numerical variables family_size, work_experience. These variables will be mean imputed later.
+
+#### Exploratory Data Analysis (EDA)
+I produce the cross-tab frequency for each variable relative to outcome segmentation and plot the graphs here. I skip id variable here.
+```{r eda2, message = FALSE}
+auto_data2 %>%
+  group_by(segmentation, gender)%>%
+  summarise(n=n())%>%
+  spread(gender, n)%>%
+  kable()
+
+auto_data2 %>%
+  group_by(segmentation, ever_married)%>%
+  summarise(n=n())%>%
+  spread(ever_married, n)%>%
+  kable()
+
+auto_data2 %>%
+  group_by(segmentation, age)%>%
+  summarise(n=n())%>%
+  spread(age, n)%>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+
+auto_data2 %>%
+  group_by(segmentation, graduated)%>%
+  summarise(n=n())%>%
+  spread(graduated, n)%>%
+  kable()
+
+auto_data2 %>%
+  group_by(segmentation, profession)%>%
+  summarise(n=n())%>%
+  spread(profession, n)%>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+
+auto_data2 %>%
+  group_by(segmentation, work_experience)%>%
+  summarise(n=n())%>%
+  spread(work_experience, n)%>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "900px")
+
+auto_data2 %>%
+  group_by(segmentation, spending_score)%>%
+  summarise(n=n())%>%
+  spread(spending_score, n)%>%
+  kable()
+
+auto_data2 %>%
+  group_by(segmentation, family_size)%>%
+  summarise(n=n())%>%
+  spread(family_size, n)%>%
+  kable()
+
+auto_data2 %>%
+  group_by(segmentation, var_1)%>%
+  summarise(n=n())%>%
+  spread(var_1, n)%>%
+  kable()
+```
+
+Plotting graphs here:
+```{r plot-ct}
+PlotXTabs(auto_data2, segmentation, gender, plottype = "side")
+PlotXTabs(auto_data2, segmentation, ever_married, plottype = "side")
+PlotXTabs(auto_data2, segmentation, age, plottype = "side")
+PlotXTabs(auto_data2, segmentation, graduated, plottype = "side")
+PlotXTabs(auto_data2, segmentation, profession, plottype = "side")
+PlotXTabs(auto_data2, segmentation, work_experience, plottype = "side")
+PlotXTabs(auto_data2, segmentation, spending_score, plottype = "side")
+PlotXTabs(auto_data2, segmentation, family_size, plottype = "side")
+PlotXTabs(auto_data2, segmentation, var_1, plottype = "side")
+```
+
+### The Model 
+```{r model}
+auto_data2 <- auto_data2 %>%
+  mutate(gender = factor(gender), 
+         ever_married = factor(ever_married), 
+         graduated = factor(graduated), 
+         profession = factor(profession), 
+         spending_score = factor(spending_score),
+         var_1 = factor(var_1), 
+         segmentation = factor(segmentation))
+
+set.seed(2021)
+auto_data_split <- initial_split(auto_data2, prop = 0.75)  
+auto_data_train <- training(auto_data_split)
+auto_data_test <- testing(auto_data_split)
+
+auto_train_recipe <- recipe(segmentation ~ ., data = auto_data_train) %>%
+  step_rm(id) %>%
+  step_meanimpute(family_size, work_experience) %>%
+  step_dummy(gender, ever_married, graduated, 
+             profession, spending_score, var_1, one_hot = TRUE) %>%
+  step_center(age, family_size, work_experience) %>% 
+  step_scale(age, family_size, work_experience) %>% 
+  prep()
+
+auto_train_juiced <- juice(auto_train_recipe)
+auto_test_baked <- bake(auto_train_recipe, new_data = auto_data_test)
+
+begin <- 3
+
+for (i in seq(begin, 23, 2)) {
+  
+# Make a knn spec
+knn_spec <- nearest_neighbor(neighbor = i) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+# Use the knn spec to fit the prepared training data
+knn_fit <- knn_spec %>% 
+  fit(segmentation ~., data = auto_train_juiced)
+
+# Evaluate the model with the training data
+train_knn_fit <-  knn_fit %>% 
+    predict(auto_train_juiced) %>% 
+    bind_cols(auto_train_juiced) %>% 
+    metrics(truth = segmentation, estimate = .pred_class) %>% 
+    mutate(k = i)
+
+# Evaluate the model with the testing data
+test_knn_fit <- knn_fit %>% 
+    predict(auto_test_baked) %>% 
+    bind_cols(auto_test_baked) %>% 
+    metrics(truth = segmentation, estimate = .pred_class) %>% 
+    mutate(k = i)
+
+# Create summary performance evaluation dataframes
+if (i == begin) {
+  summary_train_knn_fit <- train_knn_fit
+  summary_test_knn_fit <-  test_knn_fit
+} else {
+  summary_train_knn_fit <- bind_rows(summary_train_knn_fit, train_knn_fit)
+  summary_test_knn_fit <- bind_rows(summary_test_knn_fit, test_knn_fit)
+  }
+}
+
+summary_train_knn_fit
+
+summary_train_knn_fit %>% 
+  filter(.metric == "accuracy") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Auto Data Training Accuracy by k values",
+       x = "k Values",
+       y = "Accuracy")
+
+summary_train_knn_fit %>% 
+  filter(.metric == "kap") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Auto Data Training Kappa by k values",
+       x = "k Values",
+       y = "Kappa")
+
+summary_test_knn_fit %>% 
+  filter(.metric == "accuracy") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Auto Data Testing Accuracy by k values",
+       x = "k Values",
+       y = "Accuracy")
+
+summary_test_knn_fit %>% 
+  filter(.metric == "kap") %>% 
+  ggplot(aes(x = k, y = .estimate)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Auto Data Testing Kappa by k values",
+       x = "k Values",
+       y = "Kappa")
+```
+
+It seems like both kappa and accuracy values are maximized at k = 21. Hence, k = 21 is the optimal value. 
+
+### Classifying new data 
+```{r classify-new-data}
+# Apply the same recipe to the final combined dataset
+auto_data_baked <- bake(auto_train_recipe, new_data = auto_data2)
+
+# knn spec for optimal value of k
+knn_spec <- nearest_neighbor(neighbor = 21) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+# Use the optimal knn spec to fit the prepared combined dataframe
+final_knn_fit <- knn_spec %>% 
+  fit(segmentation ~., data = auto_data_baked)
+
+gender_Female <- c(1, 0, 1, 0, 0)
+gender_Male <- c(0, 1, 0, 1, 1)
+ever_married_Yes <- c(1, 1, 1, 1, 1)
+ever_married_No <- c(0, 0, 0, 0, 0)
+age <- c(36, 37, 47, 47, 61)
+graduated_No <- c(0, 0, 0, 0, 0)
+graduated_Yes <- c(1, 1, 1, 1, 1)
+profession_Artist <- c(0, 0, 1, 0, 0)
+profession_Doctor <- c(0, 0, 0, 1, 1)
+profession_Engineer <- c(1, 0, 0, 0, 0)
+profession_Entertainment <- c(0, 0, 0, 0, 0)
+profession_Executive <- c(0, 0, 0, 0, 0)
+profession_Healthcare <- c(0, 1, 0, 0, 0)
+profession_Homemaker <- c(0, 0, 0, 0, 0) 
+profession_Lawyer <- c(0, 0, 0, 0, 0)
+profession_Marketing <- c(0, 0, 0, 0, 0)
+work_experience <- c(0, 8, 1, 0, 5)
+spending_score_Low <- c(1, 0, 0, 0, 1)
+spending_score_Average <- c(0, 1, 1, 0, 0)
+spending_score_High <- c(0, 0, 0, 1, 0)
+family_size <- c(1, 4, 3, 5, 3)
+var_1_Cat_1 <- c(0, 0, 0, 0, 0)
+var_1_Cat_2 <- c(0, 0, 0, 0, 0)
+var_1_Cat_3 <- c(0, 0, 0, 0, 0)
+var_1_Cat_4 <- c(0, 0, 0, 1, 0)
+var_1_Cat_5 <- c(0, 0, 0, 0, 0)
+var_1_Cat_6 <- c(1, 1, 1, 0, 1)
+var_1_Cat_7 <- c(0, 0, 0, 0, 0)
+
+new_data <- tibble(
+  gender_Female = gender_Female,
+  gender_Male = gender_Male, 
+  ever_married_Yes = ever_married_Yes,
+  ever_married_No = ever_married_No,
+  age = age, 
+  graduated_No = graduated_No,
+  graduated_Yes = graduated_Yes, 
+  profession_Artist = profession_Artist, 
+  profession_Doctor = profession_Doctor, 
+  profession_Engineer = profession_Engineer, 
+  profession_Entertainment = profession_Entertainment, 
+  profession_Executive = profession_Executive, 
+  profession_Healthcare = profession_Healthcare, 
+  profession_Homemaker = profession_Homemaker, 
+  profession_Lawyer = profession_Lawyer, 
+  profession_Marketing = profession_Marketing, 
+  work_experience = work_experience, 
+  spending_score_Average = spending_score_Average, 
+  spending_score_High = spending_score_High, 
+  spending_score_Low = spending_score_Low,
+  family_size = family_size, 
+  var_1_Cat_1 = var_1_Cat_1, 
+  var_1_Cat_2 = var_1_Cat_2, 
+  var_1_Cat_3 = var_1_Cat_3, 
+  var_1_Cat_4 = var_1_Cat_4, 
+  var_1_Cat_5 = var_1_Cat_5, 
+  var_1_Cat_6 = var_1_Cat_6, 
+  var_1_Cat_7 = var_1_Cat_7)
+
+predict(final_knn_fit, new_data = new_data) %>% kable()
+```
+
+
+### Project Log
+Creating pretty R themes:
+https://cran.r-project.org/web/packages/prettydoc/vignettes/tactile.html
+
+Overriding the default connection between geom_bar and count():
+https://www.r-graph-gallery.com/218-basic-barplots-with-ggplot2.html 
+
+Arranging bar plots in ascending order:
+https://www.programmingwithr.com/how-to-arrange-ggplot-barplot-bars-in-ascending-or-descending-order/
+
+Drawing Line Graphs for Factors by Grouping:
+https://kohske.wordpress.com/2010/12/27/faq-geom_line-doesnt-draw-lines/ 
+
+Cut:
+https://stackoverflow.com/questions/39123458/how-does-cut-with-breaks-work-in-r 
+
+Grid:
+https://cran.r-project.org/web/packages/egg/vignettes/Ecosystem.html
+
+Crosstab:
+http://analyticswithr.com/contingencytables.html#dplyr__tidyr:_crosstabs
+
+Plotting Crosstabs:
+https://ibecav.github.io/CGPfunctions/reference/PlotXTabs.html
+
+### The Pledge 
+On my honor, I have neither given nor received any unacknowledged aid on this project.
+
+Utkrist P. Thapa '21
+
+April 15, 2021, Thursday 
+
+
+
