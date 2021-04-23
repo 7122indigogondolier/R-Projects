@@ -13,7 +13,7 @@ In this project, I have used most of the skills I have learned in R to gather bu
 
 3. Final Project: https://htmlpreview.github.io/?https://github.com/7122indigogondolier/R-Projects/blob/main/Final-Project-thapau21.html
 
-## Proteced API Keys and Databse Login
+## Protected API Keys and Databse Login
 I have removed the private Google API key that I used in these projects for security purposes. Similarly, I have excluded the username and password for the online database in the final project.
 
 ## Author: 
