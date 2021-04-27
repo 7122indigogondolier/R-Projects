@@ -5,7 +5,9 @@ This is a repository of a few R projects I have worked on as part of my Data Min
 Please use the following links to view the rendered HTML for the projects:
 
 1. Project 1 - Data Preparation, Exploration & Partitioning: https://htmlpreview.github.io/?https://github.com/7122indigogondolier/R-Projects/blob/main/Project-1-thapau21.html
-2. Project 2: https://htmlpreview.github.io/?https://github.com/7122indigogondolier/R-Projects/blob/main/Project-2-thapau21.html
+
+
+2. Project 2 - Geospatial Mapping and Webscraping: https://htmlpreview.github.io/?https://github.com/7122indigogondolier/R-Projects/blob/main/Project-2-thapau21.html
 
 
 ## View Final Project: Gathering Business Intelligence from Online Database
